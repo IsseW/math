@@ -144,6 +144,33 @@ pub struct Identifier {
     index: Option<AlphaNumerical>,
 }
 
+impl From<char> for Identifier {
+    fn from(c: char) -> Self {
+        Identifier {
+            id: Alpha::from_char(c).unwrap(),
+            index: None,
+        }
+    }
+}
+
+impl From<(char, char)> for Identifier {
+    fn from((c1, c2): (char, char)) -> Self {
+        Identifier {
+            id: Alpha::from_char(c1).unwrap(),
+            index: Some(AlphaNumerical::Alpha(Alpha::from_char(c2).unwrap())),
+        }
+    }
+}
+
+impl From<(char, u64)> for Identifier {
+    fn from((c, n): (char, u64)) -> Self {
+        Identifier {
+            id: Alpha::from_char(c).unwrap(),
+            index: Some(AlphaNumerical::Numerical(n)),
+        }
+    }
+}
+
 impl Display for Identifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.id)?;

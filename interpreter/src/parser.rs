@@ -1,31 +1,29 @@
-#![feature(int_log, let_chains)]
-
 use std::{
     collections::HashMap,
     ops::{Deref, RangeInclusive},
     str::Chars,
 };
 
-use identifier::{Alpha, AlphaNumerical, Identifier};
-use value::{EqualityOperator, Expr, Fragment, Function, Operator};
+use crate::{
+    identifier::{Alpha, AlphaNumerical, Identifier},
+    value::{
+        Define, EqualityOperator, Expr, Expression, Fragment, Func, Operator, Statement, ToTerm,
+    },
+};
 
-mod identifier;
-mod value;
-
-struct Interpreter {
-    pub values: HashMap<Identifier, bool>,
-}
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum TokenKind {
+pub enum TokenKind {
     Number(f64),
     Identifier(Identifier),
     Operator(Operator),
     Eq(EqualityOperator),
     Ctrl(char),
-    Function(Function),
+    Function(Func),
+    Assign,
 }
 
-struct Token {
+#[derive(Debug)]
+pub struct Token {
     kind: TokenKind,
     span: RangeInclusive<usize>,
 }
@@ -50,8 +48,8 @@ impl From<f64> for TokenKind {
     }
 }
 
-impl From<Function> for TokenKind {
-    fn from(func: Function) -> Self {
+impl From<Func> for TokenKind {
+    fn from(func: Func) -> Self {
         TokenKind::Function(func)
     }
 }
@@ -68,16 +66,44 @@ impl From<EqualityOperator> for TokenKind {
     }
 }
 
-struct TextParser<'a> {
+#[derive(Debug, Clone)]
+pub enum Syntax {
+    InvalidIdentifier,
+    InvalidFunction,
+    ExpectedChar(char),
+    UnexpectedChar,
+}
+
+#[derive(Debug, Clone)]
+pub struct Error<T> {
+    err: T,
+    span: RangeInclusive<usize>,
+}
+
+impl<T> Error<T> {
+    pub fn new(err: T, span: RangeInclusive<usize>) -> Self {
+        Error { err, span }
+    }
+
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Error<U> {
+        Error {
+            err: f(self.err),
+            span: self.span,
+        }
+    }
+}
+
+pub struct TextParser<'a> {
     pos: usize,
     start_pos: usize,
     current: Option<char>,
     iter: Chars<'a>,
     tokens: Vec<Token>,
+    errors: Vec<Error<Syntax>>,
 }
 
 impl<'a> TextParser<'a> {
-    fn new(s: &'a str) -> Self {
+    pub fn new(s: &'a str) -> Self {
         let mut iter = s.chars();
         let next = iter.next();
         TextParser {
@@ -86,6 +112,7 @@ impl<'a> TextParser<'a> {
             current: next,
             iter,
             tokens: Vec::new(),
+            errors: Vec::new(),
         }
     }
 
@@ -103,7 +130,7 @@ impl<'a> TextParser<'a> {
 
     fn next(&mut self) -> Option<char> {
         self.current = self.iter.next();
-        if let Some(current) = self.current {
+        if self.current.is_some() {
             self.pos += 1;
         }
         self.current
@@ -112,6 +139,13 @@ impl<'a> TextParser<'a> {
     fn token(&mut self, token: impl Into<TokenKind>) {
         self.tokens.push(Token {
             kind: token.into(),
+            span: self.start_pos..=self.pos,
+        });
+    }
+
+    fn error(&mut self, kind: Syntax) {
+        self.errors.push(Error {
+            err: kind,
             span: self.start_pos..=self.pos,
         });
     }
@@ -149,7 +183,8 @@ impl<'a> TextParser<'a> {
                             Some(AlphaNumerical::Numerical(index)),
                         ));
                     } else {
-                        panic!("Invalid identifier");
+                        self.error(Syntax::InvalidIdentifier);
+                        self.next();
                     }
                 } else if self.current.map(|c| c.is_alphabetic()).unwrap_or(false) {
                     let mut function = String::new();
@@ -162,10 +197,11 @@ impl<'a> TextParser<'a> {
                             break;
                         }
                     }
-                    if let Some(func) = Function::from_str(&function) {
+                    if let Some(func) = Func::from_str(&function) {
                         self.token(func);
                     } else {
-                        panic!("Invalid function");
+                        self.error(Syntax::InvalidFunction);
+                        self.next();
                     }
                 } else {
                     self.token(Identifier::new(alpha, None));
@@ -185,13 +221,21 @@ impl<'a> TextParser<'a> {
             } else if let Some(op) = Operator::from_char(current) {
                 self.token(op);
                 self.next();
+            } else if current == ':' {
+                if self.next() == Some('=') {
+                    self.token(TokenKind::Assign);
+                    self.next();
+                } else {
+                    self.error(Syntax::ExpectedChar('='));
+                }
             } else if let Some(op) = match current {
                 '=' => Some(EqualityOperator::Equal),
                 '!' => {
                     if self.next() == Some('=') {
                         Some(EqualityOperator::NotEqual)
                     } else {
-                        panic!("Expected =");
+                        self.error(Syntax::ExpectedChar('='));
+                        continue;
                     }
                 }
                 '<' => {
@@ -219,24 +263,58 @@ impl<'a> TextParser<'a> {
                 self.token(TokenKind::Ctrl(ctrl));
                 self.next();
             } else {
-                panic!("Invalid character {} at {}", current, self.pos);
+                self.error(Syntax::UnexpectedChar);
+                self.next();
             }
         }
     }
 
-    fn parse(&mut self) {
+    pub fn parse(&mut self) -> Result<TokenParser, Vec<Error<Syntax>>> {
         self.parse_raw();
+        if self.errors.is_empty() {
+            Ok(TokenParser::new(&self.tokens))
+        } else {
+            Err(self.errors.clone())
+        }
     }
 }
 
-struct TokenParser<'a> {
+#[derive(Debug, Clone)]
+pub enum Parse {
+    ExpectedToken(TokenKind),
+    ExpectedValue,
+}
+
+#[derive(Debug, Clone)]
+pub enum Full {
+    Syntax(Syntax),
+    Parse(Parse),
+    NotExpression,
+}
+
+#[derive(Debug)]
+pub struct TokenParser<'a> {
     tokens: &'a [Token],
     pos: usize,
+    errors: Vec<Error<Parse>>,
 }
 
 impl<'a> TokenParser<'a> {
-    fn new(tokens: &'a [Token]) -> Self {
-        Self { tokens, pos: 0 }
+    pub fn new(tokens: &'a [Token]) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            errors: Vec::new(),
+        }
+    }
+
+    fn error(&mut self, kind: Parse) {
+        self.errors.push(Error {
+            err: kind,
+            span: self.tokens[self.pos.min(self.tokens.len() - 1)]
+                .span
+                .clone(),
+        });
     }
 
     fn current(&self) -> Option<&Token> {
@@ -297,7 +375,7 @@ impl<'a> TokenParser<'a> {
                     break;
                 }
                 _ => {
-                    panic!("Expected ')' as ender");
+                    self.error(Parse::ExpectedToken(TokenKind::Ctrl(')')));
                 }
             }
         }
@@ -321,7 +399,7 @@ impl<'a> TokenParser<'a> {
                             ),
                         ));
                     } else {
-                        panic!("Expected ')' as ender");
+                        self.error(Parse::ExpectedToken(TokenKind::Ctrl(')')));
                     }
                 }
                 TokenKind::Function(function) => {
@@ -330,9 +408,20 @@ impl<'a> TokenParser<'a> {
                         ..
                     }) = self.next()
                     {
-                        return Some((neg, Fragment::Function(function, self.parse_args())));
+                        let start = self.pos;
+                        if let Ok(end) = self.end_of_paren(')') {
+                            return Some((
+                                neg,
+                                Fragment::Func(
+                                    function,
+                                    TokenParser::new(&self.tokens[start..end]).parse_expr(),
+                                ),
+                            ));
+                        } else {
+                            self.error(Parse::ExpectedToken(TokenKind::Ctrl(')')));
+                        }
                     } else {
-                        panic!("Expected '(' after function");
+                        self.error(Parse::ExpectedToken(TokenKind::Ctrl('(')));
                     }
                 }
                 TokenKind::Number(num) => {
@@ -347,10 +436,7 @@ impl<'a> TokenParser<'a> {
                         })
                     ) {
                         self.next();
-                        return Some((
-                            neg,
-                            Fragment::Function(Function::Defined(ident), self.parse_args()),
-                        ));
+                        return Some((neg, Fragment::Call(ident, self.parse_args())));
                     } else {
                         return Some((neg, Fragment::Identifier(ident)));
                     }
@@ -361,31 +447,21 @@ impl<'a> TokenParser<'a> {
             }
             self.next();
         }
-        unreachable!()
+        None
     }
 
     fn parse_expr(&mut self) -> Expr {
-        let mut fragments = Vec::new();
+        let mut terms = Vec::new();
         let mut exp_op = false;
         let mut sign = false;
         let mut factors = Vec::new();
         let mut div_factors = Vec::new();
         let mut div_last = false;
-        fn create_factors(factors: &Vec<Fragment>, div_factors: &Vec<Fragment>) -> Vec<Fragment> {
-            match (factors.is_empty(), div_factors.is_empty()) {
-                (true, _) => vec![Fragment::Number(0.0)],
-                (false, false) => factors.clone(),
-                (false, true) => vec![Fragment::Division(
-                    Expr::from(factors.clone()),
-                    Expr::from(div_factors.clone()),
-                )],
-            }
-        }
         while let Some(current) = self.current() {
             if exp_op {
                 match current.kind {
                     TokenKind::Operator(Operator::Add) => {
-                        fragments.push((sign, create_factors(&factors, &div_factors)));
+                        terms.push((sign, &factors, &div_factors).term());
                         sign = false;
                         factors.clear();
                         div_factors.clear();
@@ -393,7 +469,7 @@ impl<'a> TokenParser<'a> {
                         div_last = false;
                     }
                     TokenKind::Operator(Operator::Sub) => {
-                        fragments.push((sign, create_factors(&factors, &div_factors)));
+                        terms.push((sign, &factors, &div_factors).term());
                         sign = true;
                         factors.clear();
                         div_factors.clear();
@@ -412,7 +488,7 @@ impl<'a> TokenParser<'a> {
                             exp_op = true;
                             div_last = true;
                         } else {
-                            panic!("Unexpected token");
+                            self.error(Parse::ExpectedValue);
                         }
                     }
                     TokenKind::Operator(Operator::Pow) => {
@@ -427,7 +503,7 @@ impl<'a> TokenParser<'a> {
                                 factors.push(Fragment::Pow(Expr::from(base), Expr::from(exp)));
                                 exp_op = true;
                             } else {
-                                panic!("Unexpected token");
+                                self.error(Parse::ExpectedValue);
                             }
                         } else {
                             unreachable!()
@@ -440,7 +516,7 @@ impl<'a> TokenParser<'a> {
                             exp_op = true;
                             div_last = false;
                         } else {
-                            panic!("Unexpected token");
+                            self.error(Parse::ExpectedValue);
                         }
                     }
                 }
@@ -450,24 +526,106 @@ impl<'a> TokenParser<'a> {
                 exp_op = true;
                 div_last = false;
             } else {
-                panic!("Unexpected token");
+                self.error(Parse::ExpectedValue);
             }
             self.next();
         }
 
-        Expr::from(fragments)
+        terms.push((sign, factors, div_factors).term());
+
+        Expr::from(terms)
     }
 
-    fn parse(&mut self) {}
+    pub fn parse(&mut self) -> Result<Statement, Vec<Error<Parse>>> {
+        let expr = self.parse_expr();
+        if self.errors.is_empty() {
+            Ok(Statement::expr(expr))
+        } else {
+            Err(self.errors.clone())
+        }
+    }
+}
+
+pub fn calculate_expr(
+    string: &str,
+    defines: &HashMap<Identifier, Define>,
+) -> Result<f64, Vec<Error<Full>>> {
+    let statement = TextParser::new(string)
+        .parse()
+        .map_err(|e| {
+            e.into_iter()
+                .map(|e| e.map(Full::Syntax))
+                .collect::<Vec<_>>()
+        })?
+        .parse()
+        .map_err(|e| {
+            e.into_iter()
+                .map(|e| e.map(Full::Parse))
+                .collect::<Vec<_>>()
+        })?;
+    let expr = statement.as_expr().ok_or_else(|| {
+        vec![Error {
+            err: Full::NotExpression,
+            span: 0..=string.len() - 1,
+        }]
+    })?;
+    Ok(expr.evaluate(defines))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::TextParser;
+    use std::collections::HashMap;
+
+    use super::*;
 
     #[test]
     fn simple_statements() {
-        let mut parser = TextParser::new("a + b_2 * b_e(E_13 * 22 - 33.44 ^ 44.22) < 0.0");
-        parser.parse();
+        assert_eq!(
+            calculate_expr("2 * cos(0.5) + 2 * 3 ^ 2", &HashMap::new()).unwrap(),
+            2.0 * 0.5f64.cos() + 2.0 * 3.0f64.powf(2.0)
+        );
+        for x in -10..=10 {
+            let x = x as f64 / 10.0;
+            assert_eq!(
+                calculate_expr(
+                    "2 * cos(x) + 2 * x ^ 2",
+                    &HashMap::from([(Identifier::from('x'), Expr::from(x).into())])
+                )
+                .unwrap(),
+                2.0 * x.cos() + 2.0 * x.powf(2.0)
+            );
+        }
+
+        let defines = &HashMap::from([(
+            Identifier::from('f'),
+            Define::from((
+                Identifier::from('x'),
+                Expr::try_from("2x ^ 2 - 3x + 1").unwrap(),
+            )),
+        )]);
+        let f = |f: f64| 2.0 * f.powf(2.0) - 3.0 * f + 1.0;
+
+        assert_eq!(
+            calculate_expr("f(10) + f(2) ^ f(3)", defines).unwrap(),
+            f(10.0) + f(2.0).powf(f(3.0))
+        );
+    }
+
+    #[test]
+    fn derivative() {
+        let id = Identifier::from('x');
+        let expr = Expr::try_from("x^3 + x^2 + x + 1 + ln(x^2)").unwrap();
+        let derivative = expr.derivative(id);
+        println!("{derivative}");
+        let d = |x: f64| 3.0 * x.powf(2.0) + 2.0 * x + 1.0 + 2.0 / x;
+        for x in -10..=10 {
+            let x = x as f64 / 10.0;
+            let expr = Expr::from(x);
+            let correct = d(x);
+            if !correct.is_nan() {
+                let value = derivative.evaluate(&HashMap::from([(id, Define::from(expr))]));
+                assert!((value - correct).abs() < 0.00001);
+            }
+        }
     }
 }
