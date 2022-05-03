@@ -1,15 +1,59 @@
 use std::{
     collections::HashMap,
+    fmt::Display,
     ops::{Deref, RangeInclusive},
     str::Chars,
 };
 
 use crate::{
     identifier::{Alpha, AlphaNumerical, Identifier},
-    value::{
-        Define, EqualityOperator, Expr, Expression, Fragment, Func, Operator, Statement, ToTerm,
-    },
+    value::{Define, Expr, Expression, Factor, Func, Statement, ToTerm},
 };
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Operator {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+}
+
+impl Operator {
+    pub fn from_char(c: char) -> Option<Self> {
+        match c {
+            '+' => Some(Operator::Add),
+            '-' => Some(Operator::Sub),
+            '*' => Some(Operator::Mul),
+            '/' => Some(Operator::Div),
+            '^' => Some(Operator::Pow),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum EqualityOperator {
+    Equal,
+    NotEqual,
+    Less,
+    LessOrEqual,
+    Greater,
+    GreaterOrEqual,
+}
+
+impl Display for EqualityOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EqualityOperator::Equal => write!(f, "="),
+            EqualityOperator::NotEqual => write!(f, "!="),
+            EqualityOperator::Less => write!(f, "<"),
+            EqualityOperator::LessOrEqual => write!(f, "<="),
+            EqualityOperator::Greater => write!(f, ">"),
+            EqualityOperator::GreaterOrEqual => write!(f, ">="),
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum TokenKind {
@@ -76,8 +120,8 @@ pub enum Syntax {
 
 #[derive(Debug, Clone)]
 pub struct Error<T> {
-    err: T,
-    span: RangeInclusive<usize>,
+    pub err: T,
+    pub span: RangeInclusive<usize>,
 }
 
 impl<T> Error<T> {
@@ -155,7 +199,10 @@ impl<'a> TextParser<'a> {
             let mut num = num as u64;
             while let Some(c) = self.next() {
                 if let Some(digit) = c.to_digit(10) {
-                    num = num * 10 + digit as u64;
+                    let digit = digit as u64;
+                    if num < u64::MAX / 10 - digit {
+                        num = num * 10 + digit;
+                    }
                 } else {
                     break;
                 }
@@ -190,12 +237,8 @@ impl<'a> TextParser<'a> {
                     let mut function = String::new();
                     function.push(current);
                     function.push(self.current.unwrap());
-                    while let Some(c) = self.next() {
-                        if c.is_alphanumeric() {
-                            function.push(c);
-                        } else {
-                            break;
-                        }
+                    while let Some(c) = self.next() && c.is_alphanumeric() {
+                        function.push(c);
                     }
                     if let Some(func) = Func::from_str(&function) {
                         self.token(func);
@@ -269,12 +312,12 @@ impl<'a> TextParser<'a> {
         }
     }
 
-    pub fn parse(&mut self) -> Result<TokenParser, Vec<Error<Syntax>>> {
+    pub fn parse(mut self) -> Result<Vec<Token>, Vec<Error<Syntax>>> {
         self.parse_raw();
         if self.errors.is_empty() {
-            Ok(TokenParser::new(&self.tokens))
+            Ok(self.tokens)
         } else {
-            Err(self.errors.clone())
+            Err(self.errors)
         }
     }
 }
@@ -296,15 +339,15 @@ pub enum Full {
 pub struct TokenParser<'a> {
     tokens: &'a [Token],
     pos: usize,
-    errors: Vec<Error<Parse>>,
+    errors: &'a mut Vec<Error<Parse>>,
 }
 
 impl<'a> TokenParser<'a> {
-    pub fn new(tokens: &'a [Token]) -> Self {
+    pub fn new(tokens: &'a [Token], errors: &'a mut Vec<Error<Parse>>) -> Self {
         Self {
             tokens,
             pos: 0,
-            errors: Vec::new(),
+            errors,
         }
     }
 
@@ -355,7 +398,7 @@ impl<'a> TokenParser<'a> {
                     ..
                 }) => depth += 1,
 
-                None => break self.pos,
+                None => return Err((self.pos, '\0')),
                 _ => {}
             }
         })
@@ -367,22 +410,23 @@ impl<'a> TokenParser<'a> {
         loop {
             match self.end_of_paren(',') {
                 Ok(end) => {
-                    args.push(TokenParser::new(&self.tokens[start..end]).parse_expr());
+                    args.push(TokenParser::new(&self.tokens[start..end], self.errors).parse_expr());
                     start = end + 1;
                 }
                 Err((end, ')')) => {
-                    args.push(TokenParser::new(&self.tokens[start..end]).parse_expr());
+                    args.push(TokenParser::new(&self.tokens[start..end], self.errors).parse_expr());
                     break;
                 }
                 _ => {
                     self.error(Parse::ExpectedToken(TokenKind::Ctrl(')')));
+                    break;
                 }
             }
         }
         args
     }
 
-    fn parse_value(&mut self) -> Option<(bool, Fragment)> {
+    fn parse_value(&mut self) -> Option<(bool, Factor)> {
         let mut neg = false;
         while let Some(current) = self.current() {
             match current.kind {
@@ -394,8 +438,9 @@ impl<'a> TokenParser<'a> {
                     if let Ok(end) = self.end_of_paren(')') {
                         return Some((
                             neg,
-                            Fragment::Group(
-                                TokenParser::new(&self.tokens[start..end]).parse_expr(),
+                            Factor::Group(
+                                TokenParser::new(&self.tokens[start..end], self.errors)
+                                    .parse_expr(),
                             ),
                         ));
                     } else {
@@ -408,13 +453,14 @@ impl<'a> TokenParser<'a> {
                         ..
                     }) = self.next()
                     {
-                        let start = self.pos;
+                        let start = self.pos + 1;
                         if let Ok(end) = self.end_of_paren(')') {
                             return Some((
                                 neg,
-                                Fragment::Func(
+                                Factor::Func(
                                     function,
-                                    TokenParser::new(&self.tokens[start..end]).parse_expr(),
+                                    TokenParser::new(&self.tokens[start..end], self.errors)
+                                        .parse_expr(),
                                 ),
                             ));
                         } else {
@@ -425,7 +471,7 @@ impl<'a> TokenParser<'a> {
                     }
                 }
                 TokenKind::Number(num) => {
-                    return Some((neg, Fragment::Number(num)));
+                    return Some((neg, Factor::Number(num)));
                 }
                 TokenKind::Identifier(ident) => {
                     if matches!(
@@ -436,9 +482,9 @@ impl<'a> TokenParser<'a> {
                         })
                     ) {
                         self.next();
-                        return Some((neg, Fragment::Call(ident, self.parse_args())));
+                        return Some((neg, Factor::Call(ident, self.parse_args())));
                     } else {
-                        return Some((neg, Fragment::Identifier(ident)));
+                        return Some((neg, Factor::Identifier(ident)));
                     }
                 }
                 _ => {
@@ -500,7 +546,7 @@ impl<'a> TokenParser<'a> {
                         if let Some(base) = factors.pop() {
                             self.next();
                             if let Some(exp) = self.parse_value() {
-                                factors.push(Fragment::Pow(Expr::from(base), Expr::from(exp)));
+                                factors.push(Factor::Pow(Expr::from(base), Expr::from(exp)));
                                 exp_op = true;
                             } else {
                                 self.error(Parse::ExpectedValue);
@@ -536,13 +582,9 @@ impl<'a> TokenParser<'a> {
         Expr::from(terms)
     }
 
-    pub fn parse(&mut self) -> Result<Statement, Vec<Error<Parse>>> {
+    pub fn parse(&mut self) -> Statement {
         let expr = self.parse_expr();
-        if self.errors.is_empty() {
-            Ok(Statement::expr(expr))
-        } else {
-            Err(self.errors.clone())
-        }
+        Statement::expr(expr)
     }
 }
 
@@ -550,19 +592,17 @@ pub fn calculate_expr(
     string: &str,
     defines: &HashMap<Identifier, Define>,
 ) -> Result<f64, Vec<Error<Full>>> {
-    let statement = TextParser::new(string)
-        .parse()
-        .map_err(|e| {
-            e.into_iter()
-                .map(|e| e.map(Full::Syntax))
-                .collect::<Vec<_>>()
-        })?
-        .parse()
-        .map_err(|e| {
-            e.into_iter()
-                .map(|e| e.map(Full::Parse))
-                .collect::<Vec<_>>()
-        })?;
+    let tokens = TextParser::new(string).parse().map_err(|e| {
+        e.into_iter()
+            .map(|e| e.map(Full::Syntax))
+            .collect::<Vec<_>>()
+    })?;
+    let mut errors = Vec::new();
+    let mut parser = TokenParser::new(&tokens, &mut errors);
+    let statement = parser.parse();
+    if !errors.is_empty() {
+        return Err(errors.into_iter().map(|e| e.map(Full::Parse)).collect());
+    }
     let expr = statement.as_expr().ok_or_else(|| {
         vec![Error {
             err: Full::NotExpression,

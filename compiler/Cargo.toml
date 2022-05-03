@@ -13,6 +13,7 @@ cranelift-native = { version = "0.82", optional = true }
 cranelift-jit = { version = "0.82", optional = true }
 cranelift-module = { version = "0.82", optional = true }
 anyhow = { version = "1.0", optional = true }
+naga = { version = "0.8.5", optional = true }
 
 [features]
 default = ["cranelift"]
@@ -20,4 +21,7 @@ cranelift = [
     "cranelift-codegen", "cranelift-frontend", 
     "cranelift-native", "cranelift-jit", 
     "cranelift-module", "anyhow"
+]
+naga = [
+    "dep:naga"
 ]

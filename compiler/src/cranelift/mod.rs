@@ -12,7 +12,7 @@ use cranelift_codegen::{
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, ModuleError};
-use interpreter::{Expr, Fragment, Func, Identifier, Term};
+use interpreter::{Expr, Factor, Func, Identifier, Term};
 
 pub const DEF_FUNCS: [Func; 7] = [
     Func::Sin,
@@ -51,6 +51,7 @@ impl<T> External<T> {
     }
 }
 
+#[allow(dead_code)]
 struct JITContext {
     jit_module: JITModule,
     external: External<FuncId>,
@@ -62,7 +63,7 @@ struct JITContext {
 }
 
 impl JITContext {
-    fn new(n_par: usize) -> Result<Self, ModuleError> {
+    fn new() -> Result<Self, ModuleError> {
         let mut jit_builder = JITBuilder::new(cranelift_module::default_libcall_names())?;
         for func in DEF_FUNCS.iter() {
             jit_builder.symbol(func.as_str(), func.get_func() as *const u8);
@@ -181,7 +182,7 @@ pub trait CodeGen {
     ) -> Value;
 }
 
-impl CodeGen for Fragment {
+impl CodeGen for Factor {
     fn inline(
         &self,
         builder: &mut FunctionBuilder,
@@ -189,10 +190,10 @@ impl CodeGen for Fragment {
         external: &External<FuncRef>,
     ) -> Value {
         match self {
-            Fragment::Number(n) => builder.ins().f64const(*n),
-            Fragment::Identifier(id) => defines.get(id).unwrap().clone(),
-            Fragment::Group(g) => g.inline(builder, defines, external),
-            Fragment::Func(f, arg) => {
+            Factor::Number(n) => builder.ins().f64const(*n),
+            Factor::Identifier(id) => defines.get(id).unwrap().clone(),
+            Factor::Group(g) => g.inline(builder, defines, external),
+            Factor::Func(f, arg) => {
                 let arg = arg.inline(builder, defines, external);
                 match f {
                     Func::Abs => builder.ins().fabs(arg),
@@ -202,13 +203,13 @@ impl CodeGen for Fragment {
                     }
                 }
             }
-            Fragment::Pow(a, b) => {
+            Factor::Pow(a, b) => {
                 let a = a.inline(builder, defines, external);
                 let b = b.inline(builder, defines, external);
                 let c = builder.ins().call(external.libc_pow, &[a, b]);
                 builder.func.dfg.first_result(c)
             }
-            Fragment::Call(_, _) => todo!(),
+            Factor::Call(_, _) => todo!(),
         }
     }
 }
@@ -231,7 +232,7 @@ impl CodeGen for Term {
             };
 
         let v = if let Some(d) = self
-            .dividends
+            .denominators
             .iter()
             .map(|d| d.inline(builder, defines, external))
             .collect::<Vec<_>>()
@@ -272,7 +273,7 @@ pub fn compile<E: CodeGen, const N: usize>(
     expr: &E,
     args: [Identifier; N],
 ) -> Result<fn(&[f64; N]) -> f64, ModuleError> {
-    let mut context = JITContext::new(args.len())?;
+    let mut context = JITContext::new()?;
 
     context
         .get_addr(expr, &args)
@@ -290,33 +291,40 @@ mod tests {
     #[test]
     fn simple_jit() {
         let inst = Instant::now();
-        let expr = Expr::try_from("2 * x + cos((x + 3 * ln(x)) ^ 2) ^ 2 + 2 + x ^ (3 * ln(x) + x) + x - x + x ^ 2 + x * (1 + 2 + 3) + 1 + 2 + 3 + 1x + 2x + 3x")
+        let o_expr = Expr::try_from("2 * x + ((x + 3 * (x)) ^ 2) ^ 2 + 2 + x ^ (3 * (x) + x) + x - x + x ^ 2 + x * (1 + 2 + 3) + 1 + 2 + 3 + 1x + 2x + 3x + 1^x + 1^x + 1^x + 1 + 1 + 1 + 1 + 1^x + 1 + 1 + 1 + 1 + 1 + 1^x + 1 + 1 + 1 + 1 + 1 + 1^(x ^ 1 ^ x ^ 1 ^ x ^ 1 ^ x ^ 1 ^ x ^ 1 ^ x ^ 1 ^ x)")
             .unwrap();
         let parse_time = inst.elapsed();
 
         let inst = Instant::now();
-        let expr = expr.simplify();
+        let expr = o_expr.simplify();
         let simplify_time = inst.elapsed();
 
         let inst = Instant::now();
         let func = compile(&expr, [Identifier::from('x')]).unwrap();
         let compile_time = inst.elapsed();
-
+        let defines = &('x', 3.0).def();
         let inst = Instant::now();
-        let a = expr.evaluate(&('x', 3.0).def());
+        let a = expr.evaluate(defines);
         let interpret_time = inst.elapsed();
 
         let inst = Instant::now();
         let b = func(&[3.0]);
         let jit_time = inst.elapsed();
 
+        let inst = Instant::now();
+        let c = o_expr.evaluate(defines);
+        let unsimified_time = inst.elapsed();
+
+        println!("Expression: {o_expr}");
+        println!("Simplified expression: {expr}");
+        println!("Parse time: {parse_time:?}",);
+        println!("Simplify time: {simplify_time:?}");
+        println!("Compile time: {compile_time:?}");
+        println!("Interpret unsimplified time: {unsimified_time:?}");
+        println!("Interpret time: {interpret_time:?}");
+        println!("JIT time: {jit_time:?}");
         assert_eq!(a, b);
 
-        println!("Simplified expression: {}", expr);
-        println!("Parse time: {:?}", parse_time);
-        println!("Simplify time: {:?}", simplify_time);
-        println!("Compile time: {:?}", compile_time);
-        println!("Interpret time: {:?}", interpret_time);
-        println!("JIT time: {:?}", jit_time);
+        assert_eq!(a, c);
     }
 }

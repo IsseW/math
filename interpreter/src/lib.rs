@@ -2,14 +2,12 @@
 
 use std::collections::HashMap;
 
-use value::Define;
-
 mod identifier;
 pub mod parser;
 mod value;
 
 pub use identifier::Identifier;
-pub use value::{Expr, Expression, Fragment, Func, IntoDefines, Term};
+pub use value::{Define, Expr, Expression, Factor, Func, IntoDefines, Term};
 
 struct Interpreter {
     pub defines: HashMap<Identifier, Define>,

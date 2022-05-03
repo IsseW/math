@@ -185,4 +185,31 @@ impl Identifier {
     pub fn new(id: Alpha, index: Option<AlphaNumerical>) -> Identifier {
         Identifier { id, index }
     }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        let mut chars = s.chars();
+        let id = Alpha::from_char(chars.next()?)?;
+        if let Some(next) = chars.next() {
+            if next == '_' {
+                let n = chars.next()?;
+                if let Some(alpha) = Alpha::from_char(n) {
+                    return Some(Identifier::new(id, Some(AlphaNumerical::Alpha(alpha))));
+                } else {
+                    let mut num = n.to_digit(10)? as u64;
+                    while let Some(n) = chars.next() {
+                        let d = n.to_digit(10)? as u64;
+                        if num > u64::MAX / 10 - d {
+                            return None;
+                        }
+                        num = num * 10 + d;
+                    }
+                    return Some(Identifier::new(id, Some(AlphaNumerical::Numerical(num))));
+                }
+            } else {
+                None
+            }
+        } else {
+            Some(Identifier { id, index: None })
+        }
+    }
 }

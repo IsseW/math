@@ -1,8 +1,7 @@
 #![feature(let_else, array_try_map)]
 
-fn main() {
-    println!("Hello, world!");
-}
-
 #[cfg(feature = "cranelift")]
 pub mod cranelift;
+
+#[cfg(feature = "naga")]
+pub mod naga;
