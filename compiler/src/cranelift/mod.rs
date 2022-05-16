@@ -244,7 +244,8 @@ impl CodeGen for Term {
             n
         };
 
-        if self.sign {
+        if self.consts.is_neg() {
+            let c = builder.ins().f64const(f64::from(self.consts));
             builder.ins().fneg(v)
         } else {
             v

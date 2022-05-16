@@ -7,3 +7,7 @@ edition = "2021"
 
 [dependencies]
 interpreter = { path = "../interpreter" }
+
+
+[features]
+tracy = ["interpreter/tracy"]

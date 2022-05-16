@@ -9,3 +9,10 @@ edition = "2021"
 num = "0.4"
 num-derive = "0.3"
 num-traits = "0.2"
+rayon = "1.5.2"
+itertools = "0.10.3"
+
+profiling = { version = "1.0.1", default-features = false, optional = true }
+
+[features]
+tracy = ["profiling", "profiling/profile-with-tracy"]

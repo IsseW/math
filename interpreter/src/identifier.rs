@@ -5,7 +5,7 @@ use num_derive::FromPrimitive;
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, FromPrimitive, Debug)]
 #[repr(u32)]
-enum AlphaKind {
+pub enum AlphaKind {
     A = 0,
     B = 1,
     C = 2,
@@ -49,19 +49,19 @@ enum AlphaKind {
     Omicron = 40,
     Pi = 41,
     Rho = 42,
-    Sigma = 43,
-    Tau = 44,
-    Upsilon = 45,
-    Phi = 46,
-    Chi = 47,
-    Psi = 48,
-    Omega = 49,
+    Sigma = 44,
+    Tau = 45,
+    Upsilon = 46,
+    Phi = 47,
+    Chi = 48,
+    Psi = 49,
+    Omega = 50,
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 pub struct Alpha {
-    kind: AlphaKind,
-    upper: bool,
+    pub(crate) kind: AlphaKind,
+    pub(crate) upper: bool,
 }
 
 impl Display for Alpha {
@@ -87,17 +87,6 @@ impl Display for Alpha {
 }
 
 impl Alpha {
-    pub fn associated_value(&self) -> Option<f64> {
-        match (self.kind, self.upper) {
-            (AlphaKind::Pi, false) => Some(consts::PI),
-            (AlphaKind::E, false) => Some(consts::E),
-            (AlphaKind::Tau, false) => Some(consts::TAU),
-            // Golden ratio
-            (AlphaKind::Phi, false) => Some(1.61803398875),
-            _ => None,
-        }
-    }
-
     pub fn from_char(c: char) -> Option<Self> {
         match c {
             'a'..='z' => Some(Alpha {
@@ -121,6 +110,213 @@ impl Alpha {
             _ => None,
         }
     }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        let mut c = s.chars();
+        if let Some(char) = c.next() && c.next().is_none() {
+            Self::from_char(char)
+        } else {
+            Some(match s {
+                "alpha" => Alpha {
+                    kind: AlphaKind::Alpha,
+                    upper: false,
+                },
+                "Alpha" => Alpha {
+                    kind: AlphaKind::Alpha,
+                    upper: true,
+                },
+                "beta" => Alpha {
+                    kind: AlphaKind::Beta,
+                    upper: false,
+                },
+                "Beta" => Alpha {
+                    kind: AlphaKind::Beta,
+                    upper: true,
+                },
+                "gamma" => Alpha {
+                    kind: AlphaKind::Gamma,
+                    upper: false,
+                },
+                "Gamma" => Alpha {
+                    kind: AlphaKind::Gamma,
+                    upper: true,
+                },
+                "delta" => Alpha {
+                    kind: AlphaKind::Delta,
+                    upper: false,
+                },
+                "Delta" => Alpha {
+                    kind: AlphaKind::Delta,
+                    upper: true,
+                },
+                "epsilon" => Alpha {
+                    kind: AlphaKind::Epsilon,
+                    upper: false,
+                },
+                "Epsilon" => Alpha {
+                    kind: AlphaKind::Epsilon,
+                    upper: true,
+                },
+                "zeta" => Alpha {
+                    kind: AlphaKind::Zeta,
+                    upper: false,
+                },
+                "Zeta" => Alpha {
+                    kind: AlphaKind::Zeta,
+                    upper: true,
+                },
+                "eta" => Alpha {
+                    kind: AlphaKind::Eta,
+                    upper: false,
+                },
+                "Eta" => Alpha {
+                    kind: AlphaKind::Eta,
+                    upper: true,
+                },
+                "theta" => Alpha {
+                    kind: AlphaKind::Theta,
+                    upper: false,
+                },
+                "Theta" => Alpha {
+                    kind: AlphaKind::Theta,
+                    upper: true,
+                },
+                "iota" => Alpha {
+                    kind: AlphaKind::Iota,
+                    upper: false,
+                },
+                "Iota" => Alpha {
+                    kind: AlphaKind::Iota,
+                    upper: true,
+                },
+                "kappa" => Alpha {
+                    kind: AlphaKind::Kappa,
+                    upper: false,
+                },
+                "Kappa" => Alpha {
+                    kind: AlphaKind::Kappa,
+                    upper: true,
+                },
+                "lambda" => Alpha {
+                    kind: AlphaKind::Lambda,
+                    upper: false,
+                },
+                "Lambda" => Alpha {
+                    kind: AlphaKind::Lambda,
+                    upper: true,
+                },
+                "mu" => Alpha {
+                    kind: AlphaKind::Mu,
+                    upper: false,
+                },
+                "Mu" => Alpha {
+                    kind: AlphaKind::Mu,
+                    upper: true,
+                },
+                "nu" => Alpha {
+                    kind: AlphaKind::Nu,
+                    upper: false,
+                },
+                "Nu" => Alpha {
+                    kind: AlphaKind::Nu,
+                    upper: true,
+                },
+                "xi" => Alpha {
+                    kind: AlphaKind::Xi,
+                    upper: false,
+                },
+                "Xi" => Alpha {
+                    kind: AlphaKind::Xi,
+                    upper: true,
+                },
+                "omicron" => Alpha {
+                    kind: AlphaKind::Omicron,
+                    upper: false,
+                },
+                "Omicron" => Alpha {
+                    kind: AlphaKind::Omicron,
+                    upper: true,
+                },
+                "pi" => Alpha {
+                    kind: AlphaKind::Pi,
+                    upper: false,
+                },
+                "Pi" => Alpha {
+                    kind: AlphaKind::Pi,
+                    upper: true,
+                },
+                "rho" => Alpha {
+                    kind: AlphaKind::Rho,
+                    upper: false,
+                },
+                "Rho" => Alpha {
+                    kind: AlphaKind::Rho,
+                    upper: true,
+                },
+                "sigma" => Alpha {
+                    kind: AlphaKind::Sigma,
+                    upper: false,
+                },
+                "Sigma" => Alpha {
+                    kind: AlphaKind::Sigma,
+                    upper: true,
+                },
+                "tau" => Alpha {
+                    kind: AlphaKind::Tau,
+                    upper: false,
+                },
+                "Tau" => Alpha {
+                    kind: AlphaKind::Tau,
+                    upper: true,
+                },
+                "upsilon" => Alpha {
+                    kind: AlphaKind::Upsilon,
+                    upper: false,
+                },
+                "Upsilon" => Alpha {
+                    kind: AlphaKind::Upsilon,
+                    upper: true,
+                },
+                "phi" => Alpha {
+                    kind: AlphaKind::Phi,
+                    upper: false,
+                },
+                "Phi" => Alpha {
+                    kind: AlphaKind::Phi,
+                    upper: true,
+                },
+                "chi" => Alpha {
+                    kind: AlphaKind::Chi,
+                    upper: false,
+                },
+                "Chi" => Alpha {
+                    kind: AlphaKind::Chi,
+                    upper: true,
+                },
+                "psi" => Alpha {
+                    kind: AlphaKind::Psi,
+                    upper: false,
+                },
+                "Psi" => Alpha {
+                    kind: AlphaKind::Psi,
+                    upper: true,
+                },
+                "omega" => Alpha {
+                    kind: AlphaKind::Omega,
+                    upper: false,
+                },
+                "Omega" => Alpha {
+                    kind: AlphaKind::Omega,
+                    upper: true,
+                },
+                _ => return None,
+            })
+        }
+    }
+
+    pub fn simple_hash(&self) -> u64 {
+        ((self.upper as u64) << 57) ^ self.kind as u64
+    }
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
@@ -140,8 +336,8 @@ impl Display for AlphaNumerical {
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 pub struct Identifier {
-    id: Alpha,
-    index: Option<AlphaNumerical>,
+    pub(crate) id: Alpha,
+    pub(crate) index: Option<AlphaNumerical>,
 }
 
 impl From<char> for Identifier {
@@ -210,6 +406,24 @@ impl Identifier {
             }
         } else {
             Some(Identifier { id, index: None })
+        }
+    }
+
+    pub fn simple_hash(&self) -> u64 {
+        let hash = self.id.simple_hash();
+        match self.index {
+            Some(AlphaNumerical::Alpha(alpha)) => hash ^ alpha.simple_hash().rotate_right(13),
+            Some(AlphaNumerical::Numerical(n)) => hash ^ n.rotate_left(13),
+            None => !hash,
+        }
+    }
+
+    pub fn associated_value(&self) -> Option<f64> {
+        match (self.id.kind, self.id.upper, self.index) {
+            (AlphaKind::Pi, false, None) => Some(consts::PI),
+            (AlphaKind::E, false, None) => Some(consts::E),
+            (AlphaKind::Tau, false, None) => Some(consts::TAU),
+            _ => None,
         }
     }
 }

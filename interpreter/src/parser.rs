@@ -8,6 +8,7 @@ use std::{
 use crate::{
     identifier::{Alpha, AlphaNumerical, Identifier},
     value::{Define, Expr, Expression, Factor, Func, Statement, ToTerm},
+    Fraction,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -55,7 +56,7 @@ impl Display for EqualityOperator {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum TokenKind {
     Number(f64),
     Identifier(Identifier),
@@ -64,6 +65,7 @@ pub enum TokenKind {
     Ctrl(char),
     Function(Func),
     Assign,
+    Expr(Expr),
 }
 
 #[derive(Debug)]
@@ -110,6 +112,12 @@ impl From<EqualityOperator> for TokenKind {
     }
 }
 
+impl From<Expr> for TokenKind {
+    fn from(expr: Expr) -> Self {
+        TokenKind::Expr(expr)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Syntax {
     InvalidIdentifier,
@@ -137,34 +145,39 @@ impl<T> Error<T> {
     }
 }
 
-pub struct TextParser<'a> {
+pub struct TextParser {
     pos: usize,
     start_pos: usize,
     current: Option<char>,
-    iter: Chars<'a>,
+    chars: Vec<char>,
     tokens: Vec<Token>,
     errors: Vec<Error<Syntax>>,
 }
 
-impl<'a> TextParser<'a> {
-    pub fn new(s: &'a str) -> Self {
-        let mut iter = s.chars();
-        let next = iter.next();
+impl TextParser {
+    pub fn new(s: &str) -> Self {
+        let chars: Vec<char> = s.chars().collect();
+        let next = chars.get(0).cloned();
         TextParser {
             pos: 0,
             start_pos: 0,
             current: next,
-            iter,
+            chars,
             tokens: Vec::new(),
             errors: Vec::new(),
         }
     }
 
     fn next_non_whitespace(&mut self) -> Option<char> {
-        self.current = self.iter.find(|c| {
-            self.pos += 1;
-            !c.is_whitespace()
-        });
+        self.current = self
+            .chars
+            .iter()
+            .skip(self.pos)
+            .find(|c| {
+                self.pos += 1;
+                !c.is_whitespace()
+            })
+            .cloned();
         self.current
     }
 
@@ -172,8 +185,18 @@ impl<'a> TextParser<'a> {
         self.start_pos = self.pos;
     }
 
+    fn back(&mut self, num: usize) -> Option<char> {
+        self.current = self.chars.get(self.pos - num).cloned();
+        if self.current.is_some() {
+            self.pos -= num;
+        } else {
+            self.pos = 0;
+        }
+        self.current
+    }
+
     fn next(&mut self) -> Option<char> {
-        self.current = self.iter.next();
+        self.current = self.chars.get(self.pos + 1).cloned();
         if self.current.is_some() {
             self.pos += 1;
         }
@@ -194,6 +217,23 @@ impl<'a> TextParser<'a> {
         });
     }
 
+    fn parse_decimals(&mut self) -> Option<f64> {
+        if let Some(c) = self.current && let Some(num) = c.to_digit(10) {
+            let mut f = num as f64 / 10.0;
+            let mut d = 10.0;
+            while let Some(c) = self.next() {
+                if let Some(digit) = c.to_digit(10) {
+                    d *= 10.0;
+                    f += digit as f64 / d;
+                } else {
+                    break;
+                }
+            }
+            return Some(f);
+        }
+        None
+    }
+
     fn parse_unsigned(&mut self) -> Option<u64> {
         if let Some(c) = self.current && let Some(num) = c.to_digit(10) {
             let mut num = num as u64;
@@ -212,48 +252,74 @@ impl<'a> TextParser<'a> {
         None
     }
 
-    fn parse_raw(&mut self) {
+    fn collect_ident(&mut self) -> String {
+        let mut ident = String::new();
+        ident.push(self.current.unwrap());
+        while let Some(c) = self.next() && c.is_alphanumeric() {
+                    ident.push(c);
+                }
+        ident
+    }
+
+    fn parse_raw(&mut self, macros: &HashMap<&str, Expr>) {
         while let Some(current) = self.current {
             if current.is_whitespace() {
                 self.next_non_whitespace();
                 continue;
             }
             self.start();
-            if let Some(alpha) = Alpha::from_char(current) {
-                if self.next() == Some('_') {
-                    if let Some(index) = self.next().and_then(|next| Alpha::from_char(next)) {
-                        self.token(Identifier::new(alpha, Some(AlphaNumerical::Alpha(index))));
-                        self.next();
-                    } else if let Some(index) = self.parse_unsigned() {
-                        self.token(Identifier::new(
-                            alpha,
-                            Some(AlphaNumerical::Numerical(index)),
-                        ));
+            fn parse_index(parser: &mut TextParser) -> Option<AlphaNumerical> {
+                if parser.current == Some('_') {
+                    let index = if let Some(c) = parser.next() {
+                        if c.is_alphabetic() {
+                            let ident = parser.collect_ident();
+                            if let Some(index) = Alpha::from_str(&ident) {
+                                Some(AlphaNumerical::Alpha(index))
+                            } else {
+                                parser.error(Syntax::InvalidIdentifier);
+                                None
+                            }
+                        } else if let Some(index) = parser.parse_unsigned() {
+                            Some(AlphaNumerical::Numerical(index))
+                        } else {
+                            parser.error(Syntax::InvalidIdentifier);
+                            None
+                        }
                     } else {
-                        self.error(Syntax::InvalidIdentifier);
-                        self.next();
-                    }
-                } else if self.current.map(|c| c.is_alphabetic()).unwrap_or(false) {
-                    let mut function = String::new();
-                    function.push(current);
-                    function.push(self.current.unwrap());
-                    while let Some(c) = self.next() && c.is_alphanumeric() {
-                        function.push(c);
-                    }
-                    if let Some(func) = Func::from_str(&function) {
+                        parser.error(Syntax::InvalidIdentifier);
+                        None
+                    };
+                    index
+                } else {
+                    None
+                }
+            }
+            if current.is_alphabetic() {
+                let ident = self.collect_ident();
+                if let Some(alpha) = Alpha::from_str(&ident) {
+                    let index = parse_index(self);
+                    self.token(Identifier::new(alpha, index));
+                } else if let Some(func) = Func::from_str(&ident) {
+                    if self.current == Some('(') {
                         self.token(func);
                     } else {
-                        self.error(Syntax::InvalidFunction);
+                        self.error(Syntax::ExpectedChar('('));
                         self.next();
                     }
+                } else if let Some(define) = macros.get(ident.as_str()) {
+                    self.token(define.clone());
+                } else if let Some(alpha) = Alpha::from_char(ident.chars().next().unwrap()) {
+                    self.back(ident.len() - 2);
+                    let index = parse_index(self);
+                    self.token(Identifier::new(alpha, index));
                 } else {
-                    self.token(Identifier::new(alpha, None));
+                    self.error(Syntax::InvalidIdentifier);
                 }
             } else if let Some(num) = self.parse_unsigned() {
                 let num = if self.current == Some('.') {
                     self.next();
-                    if let Some(decimals) = self.parse_unsigned() && decimals > 0 {
-                        num as f64 + (decimals as f64 / 10.0f64.powi(decimals.log10() as i32 + 1))
+                    if let Some(decimals) = self.parse_decimals() {
+                        num as f64 + decimals
                     } else {
                         num as f64
                     }
@@ -312,8 +378,8 @@ impl<'a> TextParser<'a> {
         }
     }
 
-    pub fn parse(mut self) -> Result<Vec<Token>, Vec<Error<Syntax>>> {
-        self.parse_raw();
+    pub fn parse(mut self, macros: &HashMap<&str, Expr>) -> Result<Vec<Token>, Vec<Error<Syntax>>> {
+        self.parse_raw(macros);
         if self.errors.is_empty() {
             Ok(self.tokens)
         } else {
@@ -350,6 +416,8 @@ impl<'a> TokenParser<'a> {
             errors,
         }
     }
+
+    pub fn with_start(&mut self, start: Expr) {}
 
     fn error(&mut self, kind: Parse) {
         self.errors.push(Error {
@@ -405,6 +473,8 @@ impl<'a> TokenParser<'a> {
     }
 
     fn parse_args(&mut self) -> Vec<Expr> {
+        #[cfg(feature = "tracy")]
+        profiling::scope!("parse_args");
         let mut args = Vec::new();
         let mut start = self.pos + 1;
         loop {
@@ -426,23 +496,21 @@ impl<'a> TokenParser<'a> {
         args
     }
 
-    fn parse_value(&mut self) -> Option<(bool, Factor)> {
-        let mut neg = false;
+    fn parse_value(&mut self) -> Option<(Fraction, Option<Factor>)> {
+        #[cfg(feature = "tracy")]
+        profiling::scope!("parse_value");
+        let mut consts = Fraction::one();
         while let Some(current) = self.current() {
             match current.kind {
                 TokenKind::Operator(Operator::Sub) => {
-                    neg = !neg;
+                    consts = -consts;
                 }
                 TokenKind::Ctrl('(') => {
                     let start = self.pos + 1;
                     if let Ok(end) = self.end_of_paren(')') {
-                        return Some((
-                            neg,
-                            Factor::Group(
-                                TokenParser::new(&self.tokens[start..end], self.errors)
-                                    .parse_expr(),
-                            ),
-                        ));
+                        let expr =
+                            TokenParser::new(&self.tokens[start..end], self.errors).parse_expr();
+                        return Some((consts, Some(Factor::Group(expr))));
                     } else {
                         self.error(Parse::ExpectedToken(TokenKind::Ctrl(')')));
                     }
@@ -456,12 +524,12 @@ impl<'a> TokenParser<'a> {
                         let start = self.pos + 1;
                         if let Ok(end) = self.end_of_paren(')') {
                             return Some((
-                                neg,
-                                Factor::Func(
+                                consts,
+                                Some(Factor::Func(
                                     function,
                                     TokenParser::new(&self.tokens[start..end], self.errors)
                                         .parse_expr(),
-                                ),
+                                )),
                             ));
                         } else {
                             self.error(Parse::ExpectedToken(TokenKind::Ctrl(')')));
@@ -471,7 +539,9 @@ impl<'a> TokenParser<'a> {
                     }
                 }
                 TokenKind::Number(num) => {
-                    return Some((neg, Factor::Number(num)));
+                    return Fraction::from_f64(num)
+                        .map(|f| (f * consts, None))
+                        .or_else(|| Some((consts, Some(Factor::Number(num)))));
                 }
                 TokenKind::Identifier(ident) => {
                     if matches!(
@@ -482,13 +552,16 @@ impl<'a> TokenParser<'a> {
                         })
                     ) {
                         self.next();
-                        return Some((neg, Factor::Call(ident, self.parse_args())));
+                        return Some((consts, Some(Factor::Call(ident, self.parse_args()))));
                     } else {
-                        return Some((neg, Factor::Identifier(ident)));
+                        return Some((consts, Some(Factor::Identifier(ident))));
                     }
                 }
+                TokenKind::Expr(ref expr) => {
+                    return Some((consts, Some(Factor::Group(expr.clone()))));
+                }
                 _ => {
-                    return None;
+                    break;
                 }
             }
             self.next();
@@ -497,40 +570,80 @@ impl<'a> TokenParser<'a> {
     }
 
     fn parse_expr(&mut self) -> Expr {
+        #[cfg(feature = "tracy")]
+        profiling::scope!("parse_expr");
         let mut terms = Vec::new();
         let mut exp_op = false;
-        let mut sign = false;
+        let mut consts = Vec::new();
         let mut factors = Vec::new();
+        let mut div_consts = Vec::new();
         let mut div_factors = Vec::new();
         let mut div_last = false;
+        let mut const_last = false;
         while let Some(current) = self.current() {
             if exp_op {
                 match current.kind {
                     TokenKind::Operator(Operator::Add) => {
-                        terms.push((sign, &factors, &div_factors).term());
-                        sign = false;
-                        factors.clear();
-                        div_factors.clear();
+                        terms.push(
+                            (
+                                div_consts.into_iter().fold(
+                                    consts
+                                        .into_iter()
+                                        .reduce(|a, b| a * b)
+                                        .unwrap_or(Fraction::one()),
+                                    |a, b| a / b,
+                                ),
+                                factors,
+                                div_factors,
+                            )
+                                .term(),
+                        );
+                        consts = Vec::new();
+                        factors = Vec::new();
+                        div_consts = Vec::new();
+                        div_factors = Vec::new();
                         exp_op = false;
                         div_last = false;
+                        const_last = false;
                     }
                     TokenKind::Operator(Operator::Sub) => {
-                        terms.push((sign, &factors, &div_factors).term());
-                        sign = true;
-                        factors.clear();
-                        div_factors.clear();
+                        terms.push(
+                            (
+                                div_consts.into_iter().fold(
+                                    consts
+                                        .into_iter()
+                                        .reduce(|a, b| a * b)
+                                        .unwrap_or(Fraction::one()),
+                                    |a, b| a / b,
+                                ),
+                                factors,
+                                div_factors,
+                            )
+                                .term(),
+                        );
+                        consts = vec![Fraction::neg_one()];
+                        factors = Vec::new();
+                        div_consts = Vec::new();
+                        div_factors = Vec::new();
                         exp_op = false;
                         div_last = false;
+                        const_last = false;
                     }
                     TokenKind::Operator(Operator::Mul) => {
                         exp_op = false;
                         div_last = false;
+                        const_last = false;
                     }
                     TokenKind::Operator(Operator::Div) => {
                         self.next();
-                        if let Some((s, dividend)) = self.parse_value() {
-                            div_factors.push(dividend);
-                            sign ^= s;
+                        if let Some((c, factor)) = self.parse_value() {
+                            if let Some(factor) = factor {
+                                div_factors.push(factor);
+                                const_last = false;
+                            } else {
+                                const_last = true;
+                            }
+                            div_consts.push(c);
                             exp_op = true;
                             div_last = true;
                         } else {
@@ -538,27 +651,42 @@ impl<'a> TokenParser<'a> {
                         }
                     }
                     TokenKind::Operator(Operator::Pow) => {
-                        let factors = if div_last {
-                            &mut div_factors
-                        } else {
-                            &mut factors
+                        let (base, factors) = match (div_last, const_last) {
+                            (true, true) => {
+                                (div_consts.pop().map(|c| Expr::from(c)), &mut div_factors)
+                            }
+                            (true, false) => {
+                                (div_factors.pop().map(|c| Expr::from(c)), &mut div_factors)
+                            }
+                            (false, true) => (consts.pop().map(|c| Expr::from(c)), &mut factors),
+                            (false, false) => (factors.pop().map(|c| Expr::from(c)), &mut factors),
                         };
-                        if let Some(base) = factors.pop() {
+                        if let Some(base) = base {
                             self.next();
-                            if let Some(exp) = self.parse_value() {
-                                factors.push(Factor::Pow(Expr::from(base), Expr::from(exp)));
+                            if let Some((c, exp)) = self.parse_value() {
+                                factors.push(Factor::Pow(
+                                    base,
+                                    exp.map(|e| Expr::from((c, e)))
+                                        .unwrap_or_else(|| Expr::from(c)),
+                                ));
                                 exp_op = true;
+                                const_last = false;
                             } else {
                                 self.error(Parse::ExpectedValue);
                             }
                         } else {
-                            unreachable!()
+                            self.error(Parse::ExpectedValue);
                         }
                     }
                     _ => {
-                        if let Some((s, fragment)) = self.parse_value() {
-                            factors.push(fragment);
-                            sign ^= s;
+                        if let Some((c, factor)) = self.parse_value() {
+                            if let Some(factor) = factor {
+                                factors.push(factor);
+                                const_last = false;
+                            } else {
+                                const_last = true;
+                            }
+                            consts.push(c);
                             exp_op = true;
                             div_last = false;
                         } else {
@@ -566,9 +694,14 @@ impl<'a> TokenParser<'a> {
                         }
                     }
                 }
-            } else if let Some((s, fragment)) = self.parse_value() {
-                factors.push(fragment);
-                sign ^= s;
+            } else if let Some((c, factor)) = self.parse_value() {
+                if let Some(factor) = factor {
+                    factors.push(factor);
+                    const_last = false;
+                } else {
+                    const_last = true;
+                }
+                consts.push(c);
                 exp_op = true;
                 div_last = false;
             } else {
@@ -577,7 +710,20 @@ impl<'a> TokenParser<'a> {
             self.next();
         }
 
-        terms.push((sign, factors, div_factors).term());
+        terms.push(
+            (
+                div_consts.into_iter().fold(
+                    consts
+                        .into_iter()
+                        .reduce(|a, b| a * b)
+                        .unwrap_or(Fraction::one()),
+                    |a, b| a / b,
+                ),
+                factors,
+                div_factors,
+            )
+                .term(),
+        );
 
         Expr::from(terms)
     }
@@ -592,7 +738,8 @@ pub fn calculate_expr(
     string: &str,
     defines: &HashMap<Identifier, Define>,
 ) -> Result<f64, Vec<Error<Full>>> {
-    let tokens = TextParser::new(string).parse().map_err(|e| {
+    let macros = HashMap::new();
+    let tokens = TextParser::new(string).parse(&macros).map_err(|e| {
         e.into_iter()
             .map(|e| e.map(Full::Syntax))
             .collect::<Vec<_>>()

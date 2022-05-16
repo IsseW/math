@@ -1,7 +1,7 @@
 #![feature(let_chains, let_else)]
-use std::io;
+use std::{collections::HashMap, env, io};
 
-use interpreter::{Expr, Expression, Identifier, IntoDefines};
+use interpreter::{expr_from_str, Expr, Expression, Identifier, IntoDefines};
 
 fn draw_expr(expr: &Expr) {
     let expr = expr.simplify();
@@ -48,9 +48,50 @@ fn draw_expr(expr: &Expr) {
     );
 }
 
+fn read_expr(input: &str, macros: &HashMap<&str, Expr>) -> Option<Expr> {
+    match expr_from_str(input, &macros) {
+        Ok(e) => Some(e),
+        Err(err) => {
+            let mut errs = " ".repeat(input.len());
+            for e in &err {
+                unsafe {
+                    errs.as_bytes_mut()[e.span.clone()]
+                        .iter_mut()
+                        .for_each(|b| *b = b'^');
+                }
+            }
+            eprintln!("{errs}\n{:?}", err);
+            None
+        }
+    }
+    .map(|e| e.simplify())
+}
+
+#[derive(Default)]
+struct Context {
+    ans: Option<Expr>,
+    macros: HashMap<&'static str, Expr>,
+}
+
+impl Context {
+    fn update_ans(&mut self, expr: Expr) {
+        self.ans = Some(expr.clone());
+        self.macros.insert("ans", expr);
+    }
+}
+
 fn main() {
+    let mut ctx = Context::default();
+    if env::args().len() > 1 {
+        for e in env::args().skip(1) {
+            println!("{e}");
+            if let Some(expr) = read_expr(&e, &ctx.macros) {
+                println!("= {expr}")
+            }
+        }
+        return;
+    }
     let mut input = String::new();
-    let mut last: Option<Expr> = None;
     loop {
         input.clear();
         io::stdin().read_line(&mut input).unwrap();
@@ -58,65 +99,43 @@ fn main() {
         match input {
             "quit" => break,
             "draw" => {
-                if let Some(ref expr) = last {
+                if let Some(ref expr) = ctx.ans {
                     draw_expr(expr);
                 } else {
                     eprintln!("No expression to draw");
                 }
             }
             "diff" => {
-                if let Some(ref expr) = last {
+                if let Some(ref expr) = ctx.ans {
                     let id = expr.find_identifier().unwrap_or(Identifier::from('x'));
                     let derivative = expr.derivative(id);
                     println!("= {derivative}");
-                    last = Some(derivative);
+                    ctx.update_ans(derivative);
+                } else {
+                    eprintln!("No expression to differentiate");
+                }
+            }
+            "eval" => {
+                if let Some(ref expr) = ctx.ans {
+                    println!("= {}", expr.evaluate(&HashMap::new()));
                 } else {
                     eprintln!("No expression to differentiate");
                 }
             }
             _ if input.starts_with("draw(") => {
                 if input.ends_with(')') {
-                    match Expr::try_from(&input[5..input.len() - 1]) {
-                        Ok(expr) => {
-                            draw_expr(&expr);
-                            last = Some(expr);
-                        }
-                        Err(err) => {
-                            let mut errs = " ".repeat(input.len());
-                            for e in &err {
-                                unsafe {
-                                    errs.as_bytes_mut()[e.span.clone()]
-                                        .iter_mut()
-                                        .for_each(|b| *b = b'^');
-                                }
-                            }
-                            eprintln!("     {errs}\n{:?}", err);
-                            continue;
-                        }
+                    if let Some(expr) = read_expr(&input[5..input.len() - 1], &ctx.macros) {
+                        draw_expr(&expr);
                     }
                 } else {
                     eprintln!("Missing closing parenthesis");
                 }
             }
             _ => {
-                let expr = match Expr::try_from(input) {
-                    Ok(e) => e,
-                    Err(err) => {
-                        let mut errs = " ".repeat(input.len());
-                        for e in &err {
-                            unsafe {
-                                errs.as_bytes_mut()[e.span.clone()]
-                                    .iter_mut()
-                                    .for_each(|b| *b = b'^');
-                            }
-                        }
-                        eprintln!("{errs}\n{:?}", err);
-                        continue;
-                    }
+                if let Some(expr) = read_expr(input, &ctx.macros) {
+                    println!("= {expr}");
+                    ctx.update_ans(expr);
                 }
-                .simplify();
-                println!("= {expr}");
-                last = Some(expr);
             }
         }
     }
