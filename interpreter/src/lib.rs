@@ -7,7 +7,10 @@ pub mod parser;
 mod value;
 
 pub use identifier::Identifier;
-pub use value::{Define, Expr, Expression, Factor, Fraction, Sign, Func, IntoDefines, Term, expr_from_str};
+pub use value::{
+    expr_from_str, Define, Expr, Expression, Factor, Fraction, Func, IntoDefines, Sign, Term,
+    UnorderedHash,
+};
 
 struct Interpreter {
     pub defines: HashMap<Identifier, Define>,

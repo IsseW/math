@@ -17,11 +17,8 @@ pub struct Term {
 
 impl UnorderedHash for Term {
     fn unordered_hash(&self) -> u64 {
-        let n = self.consts.n().wrapping_sub(1);
-        let d = self.consts.d().wrapping_sub(1);
-        let consts = ((self.consts.is_neg() as u64) << 63) ^ n.rotate_right(7) ^ d.rotate_left(11);
 
-        self.hash_without_const() ^ consts
+        self.hash_without_const() ^ self.consts.unordered_hash()
     }
 }
 

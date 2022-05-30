@@ -28,9 +28,9 @@ impl UnorderedHash for Factor {
             Factor::Identifier(i) => i.simple_hash(),
             Factor::Group(e) => e.unordered_hash(),
             Factor::Func(f, e) => {
-                (*f as u64).rotate_left(37) ^ e.unordered_hash().rotate_right(*f as u32)
+                (*f as u64).wrapping_add(1).rotate_left(37) ^ e.unordered_hash().rotate_right(*f as u32)
             }
-            Factor::Pow(a, b) => a.unordered_hash() ^ !b.unordered_hash(),
+            Factor::Pow(a, b) => a.pow_hash(b),
             Factor::Call(id, e) => {
                 let func = id.simple_hash().rotate_left(29);
                 let args = e

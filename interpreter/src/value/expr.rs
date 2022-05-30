@@ -168,6 +168,10 @@ impl Expr {
             .unwrap_or_else(|| (Fraction::one(), Some(Factor::Group(self.clone()))))
     }
 
+    pub fn pow_hash(&self, exp: &impl UnorderedHash) -> u64 {
+        self.unordered_hash() ^ !exp.unordered_hash()
+    }
+
     pub fn simplify(&self) -> Expr {
         let expr = self.simplify_inner();
         expr.unwrap_or_default()

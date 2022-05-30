@@ -98,13 +98,11 @@ impl Alpha {
                 upper: true,
             }),
             'α'..='ω' => Some(Alpha {
-                kind: FromPrimitive::from_u32(AlphaKind::Alpha as u32 + c as u32 - 'α' as u32)
-                    .unwrap(),
+                kind: FromPrimitive::from_u32(AlphaKind::Alpha as u32 + c as u32 - 'α' as u32)?,
                 upper: false,
             }),
             'Α'..='Ω' => Some(Alpha {
-                kind: FromPrimitive::from_u32(AlphaKind::Alpha as u32 + c as u32 - 'a' as u32)
-                    .unwrap(),
+                kind: FromPrimitive::from_u32(AlphaKind::Alpha as u32 + c as u32 - 'a' as u32)?,
                 upper: true,
             }),
             _ => None,

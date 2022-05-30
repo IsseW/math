@@ -5,6 +5,8 @@ use std::{
 
 use num::integer::Roots;
 
+use crate::UnorderedHash;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Sign {
     Pos,
@@ -158,6 +160,10 @@ impl Fraction {
     pub fn is_zero(&self) -> bool {
         self.n == 0
     }
+    pub fn is_integer(&self) -> bool {
+        self.d == 1
+    }
+    
     pub fn as_whole(self) -> Option<(Sign, u64)> {
         if self.d == 1 {
             Some((self.sign, self.n))
@@ -338,6 +344,14 @@ impl Fraction {
     }
 }
 
+
+impl UnorderedHash for Fraction {
+    fn unordered_hash(&self) -> u64 {
+        let n = self.n().wrapping_sub(1);
+        let d = self.d().wrapping_sub(1);
+        ((self.is_neg() as u64) << 63) ^ n.rotate_right(7) ^ d.rotate_left(11)
+    }
+}
 impl PartialOrd for Fraction {
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         let lcm = lcm(self.d, other.d);
@@ -648,13 +662,13 @@ impl RemAssign<Fraction> for Fraction {
 #[macro_export]
 macro_rules! frac {
     (- $a:literal / $b:literal) => {
-        Fraction::new(crate::Sign::Neg, $a, $b)
+        Fraction::new(Sign::Neg, $a, $b)
     };
     ($a:literal / $b:literal) => {
-        Fraction::new(crate::Sign::Pos, $a, $b)
+        Fraction::new(Sign::Pos, $a, $b)
     };
     (- $c:literal) => {
-        Fraction::new(crate::Sign::Neg, $c, 1)
+        Fraction::new(Sign::Neg, $c, 1)
     };
     ($c:literal) => {
         Fraction::whole($c)

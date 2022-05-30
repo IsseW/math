@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, mem::size_of_val};
 
 use anyhow::Error as AnyError;
 use cranelift_codegen::{
@@ -11,8 +11,10 @@ use cranelift_codegen::{
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module, ModuleError};
-use interpreter::{Expr, Factor, Func, Identifier, Term};
+use cranelift_module::{FuncId, Linkage, Module};
+use interpreter::*;
+
+pub use cranelift_module::ModuleError;
 
 pub const DEF_FUNCS: [Func; 7] = [
     Func::Sin,
@@ -47,6 +49,35 @@ impl<T> External<T> {
         External {
             libc_pow: map(self.libc_pow),
             functions: self.functions.map(|f| map(f)),
+        }
+    }
+}
+
+pub struct Cache {
+    cached: HashMap<u64, Value>,
+}
+
+impl Cache {
+    fn new() -> Self {
+        Self {
+            cached: HashMap::new(),
+        }
+    }
+
+    fn get(
+        &mut self,
+        value: &impl CodeGen,
+        builder: &mut FunctionBuilder,
+        defines: &Defines,
+        external: &External<FuncRef>,
+    ) -> Result<Value, ModuleError> {
+        let hash = value.unordered_hash();
+        if let Some(cached) = self.cached.get(&hash) {
+            Ok(cached.clone())
+        } else {
+            let value = value.codegen(builder, defines, external, self)?;
+            self.cached.insert(hash, value.clone());
+            Ok(value)
         }
     }
 }
@@ -143,7 +174,9 @@ impl JITContext {
             })
             .collect();
 
-        let val = expr.inline(&mut builder, &defines, &external);
+        let mut cache = Cache::new();
+        let val = expr.inline(&mut builder, &defines, &external, &mut cache)?;
+        
         builder.ins().return_(&[val]);
         builder.seal_all_blocks();
         builder.finalize();
@@ -173,28 +206,55 @@ impl JITContext {
 
 type Defines = HashMap<Identifier, Value>;
 
-pub trait CodeGen {
+pub trait CodeGen: UnorderedHash + Sized {
+    fn codegen(
+        &self,
+        builder: &mut FunctionBuilder,
+        defines: &Defines,
+        external: &External<FuncRef>,
+        cache: &mut Cache,
+    ) -> Result<Value, ModuleError>;
+
     fn inline(
         &self,
         builder: &mut FunctionBuilder,
         defines: &Defines,
         external: &External<FuncRef>,
-    ) -> Value;
+        cache: &mut Cache,
+    ) -> Result<Value, ModuleError> {
+        cache.get(self, builder, defines, external)
+    }
+}
+
+impl CodeGen for Fraction {
+    fn codegen(
+        &self,
+        builder: &mut FunctionBuilder,
+        defines: &Defines,
+        external: &External<FuncRef>,
+        cache: &mut Cache,
+    ) -> Result<Value, ModuleError> {
+        Ok(builder.ins().f64const(f64::from(*self)))
+    }
 }
 
 impl CodeGen for Factor {
-    fn inline(
+    fn codegen(
         &self,
         builder: &mut FunctionBuilder,
         defines: &Defines,
         external: &External<FuncRef>,
-    ) -> Value {
-        match self {
+        cache: &mut Cache,
+    ) -> Result<Value, ModuleError> {
+        Ok(match self {
             Factor::Number(n) => builder.ins().f64const(*n),
-            Factor::Identifier(id) => defines.get(id).unwrap().clone(),
-            Factor::Group(g) => g.inline(builder, defines, external),
+            Factor::Identifier(id) => defines
+                .get(id)
+                .ok_or_else(|| ModuleError::Undeclared(format!("{}", id)))?
+                .clone(),
+            Factor::Group(g) => g.inline(builder, defines, external, cache)?,
             Factor::Func(f, arg) => {
-                let arg = arg.inline(builder, defines, external);
+                let arg = arg.inline(builder, defines, external, cache)?;
                 match f {
                     Func::Abs => builder.ins().fabs(arg),
                     f => {
@@ -204,86 +264,131 @@ impl CodeGen for Factor {
                 }
             }
             Factor::Pow(a, b) => {
-                let a = a.inline(builder, defines, external);
-                let b = b.inline(builder, defines, external);
-                let c = builder.ins().call(external.libc_pow, &[a, b]);
-                builder.func.dfg.first_result(c)
+                if let Some(num) = b.as_num() && num.is_integer() {
+                    fn pow(builder: &mut FunctionBuilder, defines: &Defines, external: &External<FuncRef>, cache: &mut Cache, a: &Expr, exp: u64) -> Result<Value, ModuleError> {
+                        Ok(if exp == 0 {
+                            cache.get(&frac!(1), builder, defines, external)?
+                        } else if exp == 1 {
+                            a.inline(builder, defines, external, cache)?
+                        } else {
+                            let hash = a.pow_hash(&Fraction::whole(exp));
+                            if let Some(n) = cache.cached.get(&hash) {
+                                *n
+                            } else {
+                                let n = 1 << (size_of_val(&exp) as u64 * 8 - 1 - exp.leading_zeros() as u64);
+                                let rest = exp & !n;
+                                let res = if rest == 0 {
+                                    let n = pow(builder, defines, external, cache, a, n / 2)?;
+                                    builder.ins().fmul(n, n)
+                                } else {
+                                    let rest = pow(builder, defines, external, cache, a, rest)?;
+                                    let n = pow(builder, defines, external, cache, a, n)?;
+                                    builder.ins().fmul(rest, n)
+                                };
+                                cache.cached.insert(hash, res);
+                                res
+                            }
+                        })
+                    }
+                    pow(builder, defines, external, cache, a, num.n())?
+                } else {
+                    let a = a.inline(builder, defines, external, cache)?;
+                    let b = b.inline(builder, defines, external, cache)?;
+                    let c = builder.ins().call(external.libc_pow, &[a, b]);
+                    builder.func.dfg.first_result(c)
+                }
             }
-            Factor::Call(_, _) => todo!(),
-        }
+            Factor::Call(i, _) => return Err(ModuleError::Undeclared(format!("{}", i))),
+        })
     }
 }
 
 impl CodeGen for Term {
-    fn inline(
+    fn codegen(
         &self,
         builder: &mut FunctionBuilder,
         defines: &Defines,
         external: &External<FuncRef>,
-    ) -> Value {
-        let Some(n) = self
-            .factors
-            .iter()
-            .map(|f| f.inline(builder, defines, external))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .reduce(|acc, x| builder.ins().fmul(acc, x)) else {
-                return builder.ins().f64const(0.0);
-            };
+        cache: &mut Cache,
+    ) -> Result<Value, ModuleError> {
+        if self.consts.is_zero() {
+            return cache.get(&frac!(0), builder, defines, external);
+        }
+        let factors = self
+                .factors
+                .iter()
+                .map(|f| f.inline(builder, defines, external, cache))
+                .try_collect::<Vec<_>>()?;
+        let n = if self.consts.n() == 1 {
+            if let Some(factors) = factors.into_iter().reduce(|acc, x| builder.ins().fmul(acc, x)) {
+                if self.consts.is_pos() {
+                    factors
+                } else {
+                    builder.ins().fneg(factors)
+                }
+            } else if self.consts.is_pos() {
+                builder.ins().f64const(1.0)
+            } else {
+                builder.ins().f64const(-1.0)
+            }
+        } else {
+            factors
+                .into_iter()
+                .fold(self.consts.codegen(builder, defines, external, cache)?, |acc, x| builder.ins().fmul(acc, x))
+        };
 
         let v = if let Some(d) = self
             .denominators
             .iter()
-            .map(|d| d.inline(builder, defines, external))
-            .collect::<Vec<_>>()
+            .map(|d| d.inline(builder, defines, external, cache))
+            .try_collect::<Vec<_>>()?
             .into_iter()
             .reduce(|acc, x| builder.ins().fmul(acc, x))
         {
-            builder.ins().fdiv(d, n)
+            builder.ins().fdiv(n, d)
         } else {
             n
         };
 
-        if self.consts.is_neg() {
-            let c = builder.ins().f64const(f64::from(self.consts));
-            builder.ins().fneg(v)
-        } else {
-            v
-        }
+        Ok(v)
     }
 }
 
 impl CodeGen for Expr {
-    fn inline(
+    fn codegen(
         &self,
         builder: &mut FunctionBuilder,
         defines: &Defines,
         external: &External<FuncRef>,
-    ) -> Value {
-        self.terms
+        cache: &mut Cache,
+    ) -> Result<Value, ModuleError> {
+        Ok(self
+            .terms
             .iter()
-            .map(|t| t.inline(builder, defines, external))
-            .collect::<Vec<_>>()
+            .map(|t| t.inline(builder, defines, external, cache))
+            .try_collect::<Vec<_>>()?
             .into_iter()
             .reduce(|acc, x| builder.ins().fadd(acc, x))
-            .unwrap_or_else(|| builder.ins().f64const(0.0))
+            .unwrap_or_else(|| builder.ins().f64const(0.0)))
     }
 }
 
+pub type CFunc<const N: usize> = fn(&[f64; N]) -> f64;
+
 pub fn compile<E: CodeGen, const N: usize>(
     expr: &E,
-    args: [Identifier; N],
-) -> Result<fn(&[f64; N]) -> f64, ModuleError> {
+    args: &[Identifier; N],
+) -> Result<CFunc<N>, ModuleError> {
     let mut context = JITContext::new()?;
 
     context
-        .get_addr(expr, &args)
+        .get_addr(expr, args)
         .map(|addr| unsafe { std::mem::transmute(addr) })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::{time::Instant, hint::black_box};
 
     use interpreter::{Expr, Expression, Identifier, IntoDefines};
 
@@ -292,8 +397,9 @@ mod tests {
     #[test]
     fn simple_jit() {
         let inst = Instant::now();
-        let o_expr = Expr::try_from("2 * x + ((x + 3 * (x)) ^ 2) ^ 2 + 2 + x ^ (3 * (x) + x) + x - x + x ^ 2 + x * (1 + 2 + 3) + 1 + 2 + 3 + 1x + 2x + 3x + 1^x + 1^x + 1^x + 1 + 1 + 1 + 1 + 1^x + 1 + 1 + 1 + 1 + 1 + 1^x + 1 + 1 + 1 + 1 + 1 + 1^(x ^ 1 ^ x ^ 1 ^ x ^ 1 ^ x ^ 1 ^ x ^ 1 ^ x ^ 1 ^ x)")
-            .unwrap();
+        // let o_expr = Expr::try_from("2 * x + ((x + 3 * (x)) ^ 4) ^ 2 + 2 + x ^ (3 * (x) + x) + x - x + x ^ 2 + x * (1 + 2 + 3) + 1 + 2 + 3 + 1x + 2x + 3x + 1^x + 1^x + 1^x + 1 + 1 + 1 + 1 + 1^x + 1 + 1 + 1 + 1 + 1 + 1^x + 1 + 1 + 1 + 1 + 1 + 1^(x ^ 1 ^ x ^ 1 ^ x ^ 1 ^ x ^ 1 ^ x ^ 1 ^ x ^ 1 ^ x)")
+        //     .unwrap();
+        let o_expr = Expr::try_from("x^(1000)+x^3+x^2+x^22+x^11+x^69").unwrap();
         let parse_time = inst.elapsed();
 
         let inst = Instant::now();
@@ -301,20 +407,25 @@ mod tests {
         let simplify_time = inst.elapsed();
 
         let inst = Instant::now();
-        let func = compile(&expr, [Identifier::from('x')]).unwrap();
+        let func = compile(&expr, &[Identifier::from('x')]).unwrap();
         let compile_time = inst.elapsed();
         let defines = &('x', 3.0).def();
+
+        // Heat up the cache
+        black_box(o_expr.evaluate(defines));
+
         let inst = Instant::now();
-        let a = expr.evaluate(defines);
+        let raw = o_expr.evaluate(defines);
+        let unsimified_time = inst.elapsed();
+
+        let inst = Instant::now();
+        let simplified = expr.evaluate(defines);
         let interpret_time = inst.elapsed();
 
         let inst = Instant::now();
-        let b = func(&[3.0]);
+        let jited = func(&[3.0]);
         let jit_time = inst.elapsed();
 
-        let inst = Instant::now();
-        let c = o_expr.evaluate(defines);
-        let unsimified_time = inst.elapsed();
 
         println!("Expression: {o_expr}");
         println!("Simplified expression: {expr}");
@@ -324,8 +435,8 @@ mod tests {
         println!("Interpret unsimplified time: {unsimified_time:?}");
         println!("Interpret time: {interpret_time:?}");
         println!("JIT time: {jit_time:?}");
-        assert_eq!(a, b);
+        assert_eq!(simplified, jited);
 
-        assert_eq!(a, c);
+        assert_eq!(simplified, raw);
     }
 }
